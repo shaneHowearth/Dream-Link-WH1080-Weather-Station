@@ -6,10 +6,16 @@
 # If running Ubuntu and getting permissions errors
 # Follow the advice given here http://ubuntuforums.org/showthread.php?t=901891
 #
-# I found the GROUPS portion was REQUIRED, set it to an appropriate group for
-# your system
+# I found the GROUPS portion was REQUIRED on one machine, set it to an appropriate group for
+# your system 
 #
-# eg. sudo echo 'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device",SYSFS{idVendor}=="1941" , SYSFS{idProduct}=="8021", MODE="0666", GROUPS="shane"' > /etc/udev/rules.d/41-usb-weather-device.rules
+# /etc/udev/rules.d/41-weather-device.rules
+#
+#
+# SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device",SYSFS{idVendor}=="1941" , SYSFS{idProduct}=="8021", MODE="0666", GROUPS="shane"
+#
+# OTOH my second machine requires these rules:
+#SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device",ATTR{idVendor}=="1941" , ATTR{idProduct}=="8021", MODE="0666", OWNER="shane"
 #
 # Then remove your device from your machine and plug it back in again
 
@@ -19,7 +25,6 @@
 # - python >= 2.6
 
 import usb.core
-import usb.util
 import time
 import struct
 import math
@@ -160,11 +165,6 @@ def wind_chill(temperature, wind):
 dev = open_ws()
 dev.set_configuration()
 
-# for cfg in dev:
-#      for i in cfg:
-#      	for e in i:
-#      		print hex(e.bEndpointAddress)
-
 # Loop, forever
 while(1):
     # Get the first 32 Bytes of the fixed
@@ -174,7 +174,7 @@ while(1):
     if (fixed_block[0] != 0x55):
         raise ValueError('Bad data returned')
 
-    # Bytes 30 and 31 when combined create an unsigned short int
+    # Bytes 31 and 32 when combined create an unsigned short int
     # that tells us where to find the weather data we want
     curpos = struct.unpack('H', fixed_block[30:32])[0]
     current_block = read_block(dev, curpos)
@@ -199,15 +199,18 @@ while(1):
     if tsign:
         outdoor_temperature *= -1
 
-    # Bytes 7 and 8 when combined create an unsigned short int
+    # Bytes 8 and 9 when combined create an unsigned short int
     # that we multiply by 0.1 to find the absolute pressure
     abs_pressure = struct.unpack('H', fixed_block[7:9])[0] * 0.1
     wind = current_block[9]
     gust = current_block[10]
     wind_extra = current_block[11]
     wind_dir = current_block[12]
-    # Bytes 13 and 14  when combined create an unsigned short int
+    # Bytes 14 and 15  when combined create an unsigned short int
     # that we multiply by 0.3 to find the total rain
+    # I'm not confident that this is correct. Neither abs_pressure nor
+    # total_rain are returning sane values. In fact total_rain has
+    # stayed static despite rainfall
     total_rain = struct.unpack('H', fixed_block[13:15])[0] * 0.3
 
     # Calculate wind speeds
