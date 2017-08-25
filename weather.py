@@ -1,3 +1,4 @@
+# Model Dreamlink WH1080
 #!/usr/bin/env python
 #
 # This is a python port of 
@@ -28,7 +29,8 @@ import usb.core
 import time
 import struct
 import math
-from datetime import datetime
+import datetime
+import pause
 
 VENDOR = 0x1941
 PRODUCT = 0x8021
@@ -36,6 +38,8 @@ WIND_DIRS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW',
              'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
 max_rain_jump = 10
 previous_rain = 0
+# interval for data collection
+period=1 # minutes
 # Only required for Weather Underground users
 wu_upload_file = "/tmp/wu-wupload.htx"
 
@@ -43,7 +47,6 @@ wu_upload_file = "/tmp/wu-wupload.htx"
 def open_ws():
     '''
     Open a connection to the device, using the PRODUCT and VENDOR information
-
     @return reference to the device
     '''
     usb_device = usb.core.find(idVendor=VENDOR, idProduct=PRODUCT)
@@ -64,7 +67,6 @@ def read_block(device, offset):
     '''
     Read a block of data from the specified device, starting at the given
     offset.
-
     @Inputs
     device
         - usb_device
@@ -107,20 +109,17 @@ def read_block(device, offset):
 def dew_point(temperature, humidity):
     '''
     Using the supplied temperature and humidity calculate the dew point
-
     From Wikipedia: The dew point is the temperature at which the water vapor
     in a sample of air at constant barometric pressure condenses into liquid
     water at the same rate at which it evaporates. [1] At temperatures below
     the dew point, water will leave the air. The condensed water is called dew
     when it forms on a solid surface. The condensed water is called either fog
     or a cloud, depending on its altitude, when it forms in the air.
-
     @Inputs
     temperature
         - float
     humidity
         - float
-
     @Return dew point
         - float
     '''
@@ -139,7 +138,6 @@ def wind_chill(temperature, wind):
     '''
     Using the supplied temperature and wind speed calculate the wind chill
     factor.
-
     From Wikipedia: Wind-chill or windchill, (popularly wind chill factor) is
     the perceived decrease in air temperature felt by the body on exposed skin
     due to the flow of air
@@ -161,102 +159,116 @@ def wind_chill(temperature, wind):
         return temperature
 
 
-# Open up a connection to the device
+
+############ Open up a connection to the device
 dev = open_ws()
 dev.set_configuration()
 
-# Loop, forever
-while(1):
-    # Get the first 32 Bytes of the fixed
-    fixed_block = read_block(dev, 0)
 
-    # Check that we have good data
-    if (fixed_block[0] != 0x55):
-        raise ValueError('Bad data returned')
+# Program starts the next round minute from now
+start_time=datetime.datetime.now()+datetime.timedelta(minutes=1)
+start_time=start_time.replace(second=0, microsecond=0)
+sampling_time=start_time
+print('Program started at ' + str(start_time))
+pause.until(start_time)
 
-    # Bytes 31 and 32 when combined create an unsigned short int
-    # that tells us where to find the weather data we want
-    curpos = struct.unpack('H', fixed_block[30:32])[0]
-    current_block = read_block(dev, curpos)
 
-    # Indoor information
-    indoor_humidity = current_block[1]
-    tlsb = current_block[2]
-    tmsb = current_block[3] & 0x7f
-    tsign = current_block[3] >> 7
-    indoor_temperature = (tmsb * 256 + tlsb) * 0.1
-    # Check if temperature is less than zero
-    if tsign:
-        indoor_temperature *= -1
+try:
+    while True:
+        sampling_time = sampling_time + datetime.timedelta(minutes=period)
+        pause.until(sampling_time)
+        # daily filenames
+        now = str(datetime.datetime.now())
+        filename='/home/pi/Desktop/Data/'+now[0:10]+'-Weather.csv'
+        file = open(filename,'a')
 
-    # Outdoor information
-    outdoor_humidity = current_block[4]
-    tlsb = current_block[5]
-    tmsb = current_block[6] & 0x7f
-    tsign = current_block[6] >> 7
-    outdoor_temperature = (tmsb * 256 + tlsb) * 0.1
-    # Check if temperature is less than zero
-    if tsign:
-        outdoor_temperature *= -1
+########### Read data
+        # Get the first 32 Bytes of the fixed
+        fixed_block = read_block(dev, 0)
 
-    # Bytes 8 and 9 when combined create an unsigned short int
-    # that we multiply by 0.1 to find the absolute pressure
-    abs_pressure = struct.unpack('H', fixed_block[7:9])[0] * 0.1
-    wind = current_block[9]
-    gust = current_block[10]
-    wind_extra = current_block[11]
-    wind_dir = current_block[12]
-    # Bytes 14 and 15  when combined create an unsigned short int
-    # that we multiply by 0.3 to find the total rain
-    # I'm not confident that this is correct. Neither abs_pressure nor
-    # total_rain are returning sane values. In fact total_rain has
-    # stayed static despite rainfall
-    total_rain = struct.unpack('H', fixed_block[13:15])[0] * 0.3
+        # Check that we have good data
+        if (fixed_block[0] != 0x55):
+            raise ValueError('Bad data returned')
 
-    # Calculate wind speeds
-    wind_speed = (wind + ((wind_extra & 0x0F) << 8)) * 0.38  # Was 0.1
-    gust_speed = (gust + ((wind_extra & 0xF0) << 4)) * 0.38  # Was 0.1
+        # Bytes 31 and 32 when combined create an unsigned short int
+        # that tells us where to find the weather data we want
+        curpos = struct.unpack('H', fixed_block[30:32])[0]
+        current_block = read_block(dev, curpos)
 
-    outdoor_dew_point = dew_point(outdoor_temperature, outdoor_humidity)
-    wind_chill_temp = wind_chill(outdoor_temperature, wind_speed)
+        # Indoor information
+        indoor_humidity = current_block[1]
+        tlsb = current_block[2]
+        tmsb = current_block[3] & 0x7f
+        tsign = current_block[3] >> 7
+        indoor_temperature = (tmsb * 256 + tlsb) * 0.1
+        # Check if temperature is less than zero
+        if tsign:
+            indoor_temperature *= -1
 
-    # Calculate rainfall rates
-    if previous_rain == 0:
-        previous_rain = total_rain
+        # Outdoor information
+        outdoor_humidity = current_block[4]
+        tlsb = current_block[5]
+        tmsb = current_block[6] & 0x7f
+        tsign = current_block[6] >> 7
+        outdoor_temperature = (tmsb * 256 + tlsb) * 0.1
+        # Check if temperature is less than zero
+        if tsign:
+            outdoor_temperature *= -1
 
-    rain_diff = total_rain - previous_rain
+        # Bytes 8 and 9 when combined create an unsigned short int
+        # that we multiply by 0.1 to find the absolute pressure
+        abs_pressure = struct.unpack('H', current_block[7:9])[0]*0.1
+        
+        wind = current_block[9]
+        gust = current_block[10]
+        wind_extra = current_block[11]
+        wind_dir = current_block[12]
+        
+        # Bytes 14 and 15  when combined create an unsigned short int
+        # that we multiply by 0.3 to find the total rain
+        # I'm not confident that this is correct. Neither abs_pressure nor
+        # total_rain are returning sane values. In fact total_rain has
+        # stayed static despite rainfall
+        # Looks like I fixed it. They used fixed_block instead of current_block
+        total_rain = struct.unpack('H', current_block[13:15])[0]*0.3
 
-    if rain_diff > max_rain_jump:  # Filter rainfall spikes
-        rain_diff = 0
-        total_rain = previous_rain
+        # Calculate wind speeds
+        wind_speed = (wind + ((wind_extra & 0x0F) << 8)) * 0.38  # Was 0.1
+        gust_speed = (gust + ((wind_extra & 0xF0) << 4)) * 0.38  # Was 0.1
 
-    # TODO: Implement rain calculations
-    # previous_rain = total_rain;
-    # shift @hourly_rain;
-    # shift @daily_rain;
-    # push @hourly_rain, $rain_diff;
-    # push @daily_rain, $rain_diff;
-    hourly_rain_rate = 0
-    daily_rain_rate = 0
+        outdoor_dew_point = dew_point(outdoor_temperature, outdoor_humidity)
+        wind_chill_temp = wind_chill(outdoor_temperature, wind_speed)
 
-    # Output, currently just some average commandline information
-    print datetime.now()
-    print "Indoor humidity", indoor_humidity, "%"
-    print "Outdoor humidity", outdoor_humidity, "%"
-    print "Indoor temperature: ", indoor_temperature, "\302\260C"
-    print "Outdoor temperature: ", outdoor_temperature, "\302\260C"
-    print "Outdoor dew point", outdoor_dew_point, "\302\260C"
-    print "Wind chill temp", wind_chill_temp, "\302\260C"
-    print "Wind speed", wind_speed, "km/h"
-    print "Gust speed", gust_speed, "km/h"
-    print "Wind direction", WIND_DIRS[wind_dir]
-    print "Rain diff", rain_diff, "mm"
-    # $hourly_rain_rate,
-    # $daily_rain_rate,
-    print "Total Rain: ", total_rain, "mm"
-    # Pretty doubtful the pressure is correct.
-    print "Absolute Pressure", abs_pressure, "hPa"
+        # Calculate rainfall rates
+        if previous_rain == 0:
+            previous_rain = total_rain
 
-    # We only need an update every 60 seconds, but there's nothing stopping
-    # data being fetched 5 times every second, if that's your desire.
-    time.sleep(60)
+        rain_diff = total_rain - previous_rain
+
+        if rain_diff > max_rain_jump:  # Filter rainfall spikes
+            rain_diff = 0
+            total_rain = previous_rain
+
+        previous_rain = total_rain;
+
+############### Save data
+        print(str(datetime.datetime.now())+' Saving data')
+        file.write(str(datetime.datetime.now()))
+        file.write(',')
+        file.write('%i,' %indoor_humidity)
+        file.write('%i,' %outdoor_humidity)
+        file.write('%2.1f,' %indoor_temperature)
+        file.write('%2.1f,' %outdoor_temperature)
+        file.write('%2.2f,' %outdoor_dew_point)
+        file.write('%2.1f,' %wind_chill_temp)
+        file.write('%2.1f,' %wind_speed)
+        file.write('%2.1f,' %gust_speed)
+        file.write('%s,' %WIND_DIRS[wind_dir])
+        file.write('%2.1f,' %rain_diff)
+        file.write('%3.1f,' %total_rain)
+        file.write('%4.1f,' %abs_pressure)
+        file.write('\n')
+        file.close()
+
+except (KeyboardInterrupt, SystemExit):
+    print ('\n...Program Stopped Manually!')
